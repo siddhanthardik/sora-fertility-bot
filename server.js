@@ -3,19 +3,15 @@ const { MessagingResponse } = require('twilio').twiml;
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
-app.use(express.json()); // needed for web widget JSON POST
+app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// Supabase client (from Render environment variables)
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// ============================
-// SCORING ALGORITHM
-// ============================
+// ---------- SCORING (unchanged) ----------
 const SCORE_MAX = 100;
-
 const deductionWeights = {
   age:        { ranges: [[18,29,0],[30,34,10],[35,37,20],[38,40,30],[41,55,40]] },
   bmi:        { ranges: [[18.5,24.9,0],[15,18.4,5],[25,29.9,5],[30,50,10]] },
@@ -39,7 +35,6 @@ function scoreFromAMH(amh, unit) {
   if (val >= 0.5) return 60;
   return 40;
 }
-
 function scoreFromFSH(fsh) {
   let val = parseFloat(fsh);
   if (isNaN(val)) return null;
@@ -48,7 +43,6 @@ function scoreFromFSH(fsh) {
   if (val <= 15) return 60;
   return 40;
 }
-
 function scoreFromAFC(afc) {
   let val = parseInt(afc);
   if (isNaN(val)) return null;
@@ -57,22 +51,17 @@ function scoreFromAFC(afc) {
   if (val >= 5) return 60;
   return 40;
 }
-
 function getAgeDeduction(age) {
   let a = parseInt(age);
-  for (let [min,max,ded] of deductionWeights.age.ranges) {
+  for (let [min,max,ded] of deductionWeights.age.ranges)
     if (a >= min && a <= max) return ded;
-  }
   return 40;
 }
-
 function getBMIDeduction(bmi) {
-  for (let [min,max,ded] of deductionWeights.bmi.ranges) {
+  for (let [min,max,ded] of deductionWeights.bmi.ranges)
     if (bmi >= min && bmi <= max) return ded;
-  }
   return 0;
 }
-
 function calculateBasicScore(data) {
   let deductions = 0;
   deductions += getAgeDeduction(data.age);
@@ -89,7 +78,6 @@ function calculateBasicScore(data) {
   deductions += data.tryDuration === 'over12' ? 5 : 0;
   return Math.max(0, SCORE_MAX - deductions);
 }
-
 function calculateEnhancedScore(data) {
   let base = calculateBasicScore(data);
   let reserveScores = [];
@@ -99,7 +87,6 @@ function calculateEnhancedScore(data) {
   let reserveAvg = reserveScores.length ? reserveScores.reduce((a,b)=>a+b,0) / reserveScores.length : 100;
   return Math.round(Math.min(100, Math.max(0, base * 0.6 + reserveAvg * 0.4)));
 }
-
 function getInterpretation(score) {
   if (score >= 75) return { band: 'High', text: 'Fertility potential appears high. Timing intercourse to ovulation may be sufficient.' };
   if (score >= 50) return { band: 'Moderate', text: 'Moderate fertility potential. Consider lifestyle changes and consult if not pregnant within 6–12 months.' };
@@ -107,9 +94,6 @@ function getInterpretation(score) {
   return { band: 'Very Low', text: 'Fertility potential is very low. Prompt medical assessment is advised.' };
 }
 
-// ============================
-// DATABASE INSERT FUNCTION
-// ============================
 async function saveLeadToSupabase(data) {
   const { error } = await supabase.from('leads').insert([{
     source: data.source,
@@ -139,7 +123,6 @@ async function saveLeadToSupabase(data) {
     consent_marketing: data.consent_marketing || false,
     consent_research: false
   }]);
-
   if (error) {
     console.error('Supabase insert error:', error);
     return false;
@@ -147,10 +130,20 @@ async function saveLeadToSupabase(data) {
   return true;
 }
 
-// ============================
-// WHATSAPP BOT STATE MACHINE
-// ============================
-const sessions = new Map(); // key: WhatsApp number (e.g., "whatsapp:+14155238886")
+// ---------- HELPER: send message with quick reply buttons ----------
+function sendWithButtons(res, bodyText, buttons) {
+  const twiml = new MessagingResponse();
+  // For WhatsApp, we can simulate quick replies by listing options in the body
+  // Twilio's native MessagingResponse doesn't support native buttons, but we can
+  // format the message to show numbered options clearly.
+  let optionsText = buttons.map((b, i) => `${i+1}. ${b.title}`).join('\n');
+  twiml.message(`${bodyText}\n\n${optionsText}`);
+  res.writeHead(200, { 'Content-Type': 'text/xml' });
+  res.end(twiml.toString());
+}
+
+// ---------- WHATSAPP BOT ----------
+const sessions = new Map();
 
 function startFlow(session) {
   session.step = 'age';
@@ -160,7 +153,7 @@ function startFlow(session) {
 app.post('/whatsapp', async (req, res) => {
   const twiml = new MessagingResponse();
   const from = req.body.From;
-  const incomingMsg = req.body.Body.trim();
+  const incomingMsg = req.body.Body.trim().toLowerCase();
 
   let session = sessions.get(from);
   if (!session) {
@@ -168,21 +161,26 @@ app.post('/whatsapp', async (req, res) => {
     sessions.set(from, session);
   }
 
-  let reply = '';
-
-  if (incomingMsg.toLowerCase() === 'restart' || incomingMsg.toLowerCase() === 'start over') {
+  // Handle restart
+  if (incomingMsg === 'restart' || incomingMsg === 'start over') {
     session.step = 'welcome';
     session.data = {};
-    reply = startFlow(session);
-    twiml.message(reply);
+    twiml.message(startFlow(session));
     res.writeHead(200, { 'Content-Type': 'text/xml' });
     return res.end(twiml.toString());
   }
 
+  // --- For quick reply buttons: we'll map numeric answers ---
+  // Users can still type the word, but buttons will send number. We'll handle both.
+
+  let reply = '';
+
   switch (session.step) {
     case 'welcome':
       reply = startFlow(session);
-      break;
+      twiml.message(reply);
+      res.writeHead(200, { 'Content-Type': 'text/xml' });
+      return res.end(twiml.toString());
 
     case 'age': {
       let age = parseInt(incomingMsg);
@@ -216,114 +214,145 @@ app.post('/whatsapp', async (req, res) => {
         session.data.weight = w;
         session.data.bmi = (w / ((session.data.height/100)**2)).toFixed(1);
         session.step = 'prevBirth';
-        reply = 'Have you *ever given birth* to a child? Reply *yes* or *no*.';
+        reply = 'Have you *ever given birth* to a child?';
+        sendWithButtons(res, reply, [{title:'Yes'}, {title:'No'}]);
+        return;
       }
       break;
     }
 
+    // For the rest, we'll use sendWithButtons for yes/no questions
+
     case 'prevBirth': {
-      let ans = incomingMsg.toLowerCase();
+      let ans = incomingMsg === '1' ? 'yes' : (incomingMsg === '2' ? 'no' : incomingMsg);
       if (ans === 'yes' || ans === 'no') {
         session.data.prevBirth = ans;
         session.step = 'cycleReg';
-        reply = 'Are your *periods usually regular* (every 21–35 days)? Reply *regular* or *irregular*.';
-      } else reply = 'Please reply *yes* or *no*.';
+        reply = 'Are your *periods usually regular* (every 21–35 days)?';
+        sendWithButtons(res, reply, [{title:'Regular'}, {title:'Irregular'}]);
+        return;
+      } else { reply = 'Please reply with 1 for Yes or 2 for No.'; }
       break;
     }
 
     case 'cycleReg': {
-      let ans = incomingMsg.toLowerCase();
+      let ans = incomingMsg === '1' ? 'regular' : (incomingMsg === '2' ? 'irregular' : incomingMsg);
       if (ans === 'regular' || ans === 'irregular') {
         session.data.cycleReg = ans;
         session.step = 'pcos';
-        reply = 'Have you been diagnosed with *PCOS*? (*yes*/*no*)';
-      } else reply = 'Please reply *regular* or *irregular*.';
+        reply = 'Have you been diagnosed with *PCOS*?';
+        sendWithButtons(res, reply, [{title:'Yes'}, {title:'No'}]);
+        return;
+      } else { reply = 'Please reply 1 for Regular, 2 for Irregular.'; }
       break;
     }
 
     case 'pcos': {
-      let ans = incomingMsg.toLowerCase();
+      let ans = incomingMsg === '1' ? 'yes' : (incomingMsg === '2' ? 'no' : incomingMsg);
       if (ans === 'yes' || ans === 'no') {
         session.data.pcos = ans;
         session.step = 'endo';
-        reply = 'Have you been diagnosed with *endometriosis*? (*yes*/*no*)';
-      } else reply = 'Please reply *yes* or *no*.';
+        reply = 'Have you been diagnosed with *endometriosis*?';
+        sendWithButtons(res, reply, [{title:'Yes'}, {title:'No'}]);
+        return;
+      } else { reply = 'Please reply 1 for Yes, 2 for No.'; }
       break;
     }
 
     case 'endo': {
-      let ans = incomingMsg.toLowerCase();
+      let ans = incomingMsg === '1' ? 'yes' : (incomingMsg === '2' ? 'no' : incomingMsg);
       if (ans === 'yes' || ans === 'no') {
         session.data.endo = ans;
         session.step = 'thyroid';
-        reply = 'Do you have a *thyroid condition*? Reply: *no*, *treated*, or *untreated*.';
-      } else reply = 'Please reply *yes* or *no*.';
+        reply = 'Do you have a *thyroid condition*?';
+        sendWithButtons(res, reply, [{title:'No'}, {title:'Treated'}, {title:'Untreated'}]);
+        return;
+      } else { reply = 'Please reply 1 for Yes, 2 for No.'; }
       break;
     }
 
     case 'thyroid': {
-      let ans = incomingMsg.toLowerCase();
+      let ans = incomingMsg === '1' ? 'no' : (incomingMsg === '2' ? 'treated' : (incomingMsg === '3' ? 'untreated' : incomingMsg));
       if (['no','treated','untreated'].includes(ans)) {
         session.data.thyroid = ans;
         session.step = 'diabetes';
-        reply = 'Have you been diagnosed with *diabetes* (Type 1 or 2)? (*yes*/*no*)';
-      } else reply = 'Please reply *no*, *treated*, or *untreated*.';
+        reply = 'Have you been diagnosed with *diabetes* (Type 1 or 2)?';
+        sendWithButtons(res, reply, [{title:'Yes'}, {title:'No'}]);
+        return;
+      } else { reply = 'Please reply 1 (No), 2 (Treated), or 3 (Untreated).'; }
       break;
     }
 
     case 'diabetes': {
-      let ans = incomingMsg.toLowerCase();
+      let ans = incomingMsg === '1' ? 'yes' : (incomingMsg === '2' ? 'no' : incomingMsg);
       if (ans === 'yes' || ans === 'no') {
         session.data.diabetes = ans;
         session.step = 'smoking';
-        reply = 'Do you currently *smoke*? (*yes*/*no*)';
-      } else reply = 'Please reply *yes* or *no*.';
+        reply = 'Do you currently *smoke*?';
+        sendWithButtons(res, reply, [{title:'Yes'}, {title:'No'}]);
+        return;
+      } else { reply = 'Please reply 1 for Yes, 2 for No.'; }
       break;
     }
 
     case 'smoking': {
-      let ans = incomingMsg.toLowerCase();
+      let ans = incomingMsg === '1' ? 'yes' : (incomingMsg === '2' ? 'no' : incomingMsg);
       if (ans === 'yes' || ans === 'no') {
         session.data.smoking = ans;
         session.step = 'alcohol';
-        reply = 'Do you drink *more than 7 alcoholic drinks per week*? (*yes*/*no*)';
-      } else reply = 'Please reply *yes* or *no*.';
+        reply = 'Do you drink *more than 7 alcoholic drinks per week*?';
+        sendWithButtons(res, reply, [{title:'Yes'}, {title:'No'}]);
+        return;
+      } else { reply = 'Please reply 1 for Yes, 2 for No.'; }
       break;
     }
 
     case 'alcohol': {
-      let ans = incomingMsg.toLowerCase();
+      let ans = incomingMsg === '1' ? 'yes' : (incomingMsg === '2' ? 'no' : incomingMsg);
       if (ans === 'yes' || ans === 'no') {
         session.data.alcohol = ans;
         session.step = 'tryDuration';
-        reply = 'How long have you been *trying to conceive*?\nReply: *under12* (less than 12 months) or *over12* (12+ months).';
-      } else reply = 'Please reply *yes* or *no*.';
+        reply = 'How long have you been *trying to conceive*?';
+        sendWithButtons(res, reply, [{title:'<12 months'}, {title:'≥12 months'}]);
+        return;
+      } else { reply = 'Please reply 1 for Yes, 2 for No.'; }
       break;
     }
 
     case 'tryDuration': {
-      let ans = incomingMsg.toLowerCase();
+      let ans = incomingMsg === '1' ? 'under12' : (incomingMsg === '2' ? 'over12' : incomingMsg);
       if (ans === 'under12' || ans === 'over12') {
         session.data.tryDuration = ans;
         session.step = 'labToggle';
-        reply = 'Do you have recent *lab results* (AMH, FSH, AFC)? Reply *yes* or *no*.';
-      } else reply = 'Please reply *under12* or *over12*.';
+        reply = 'Do you have recent *lab results* (AMH, FSH, AFC)?';
+        sendWithButtons(res, reply, [{title:'Yes'}, {title:'No'}]);
+        return;
+      } else { reply = 'Please reply 1 for under 12 months, 2 for 12+ months.'; }
       break;
     }
 
     case 'labToggle': {
-      let ans = incomingMsg.toLowerCase();
+      let ans = incomingMsg === '1' ? 'yes' : (incomingMsg === '2' ? 'no' : incomingMsg);
       if (ans === 'yes') {
         session.data.includeLab = true;
         session.step = 'amhValue';
         reply = 'Please enter your *AMH* value and unit. For example: *2.5 ng/mL* or *18 pmol/L*.';
       } else if (ans === 'no') {
         session.data.includeLab = false;
-        // Show score and go to lead capture
+        // Immediately show score and move to lead capture
+        const basicScore = calculateBasicScore(session.data);
+        const enhancedScore = null;
+        session.data.basic_score = basicScore;
+        session.data.enhanced_score = enhancedScore;
         reply = showScore(session.data);
+        twiml.message(reply);
+        // After showing score, ask for lead name
         session.step = 'leadName';
+        // Send the lead name prompt right after score (but we can't send two messages in one response, so we'll ask for name now)
+        // We already sent the score, so we need to send the name prompt next time. We'll set step to 'leadName' and the next message will trigger that case.
+        // But the current response is already sent. So we just end here; the next user message will trigger 'leadName' case.
       } else {
-        reply = 'Please reply *yes* or *no*.';
+        reply = 'Please reply 1 for Yes, 2 for No.';
       }
       break;
     }
@@ -361,6 +390,11 @@ app.post('/whatsapp', async (req, res) => {
         reply = 'Please enter a valid AFC count (0 or higher).';
       } else {
         session.data.afc = val;
+        // All lab done – show score and go to lead
+        const basicScore = calculateBasicScore(session.data);
+        const enhancedScore = calculateEnhancedScore(session.data);
+        session.data.basic_score = basicScore;
+        session.data.enhanced_score = enhancedScore;
         reply = showScore(session.data);
         session.step = 'leadName';
       }
@@ -369,12 +403,13 @@ app.post('/whatsapp', async (req, res) => {
 
     // Lead capture steps
     case 'leadName':
-      reply = 'Would you like to receive *personalised clinic options*? If yes, I’ll need your name first. Just reply with your name, or type *skip*.';
+      reply = 'Would you like to receive *personalised clinic options*? If yes, please tell me your name. (Type *skip* to decline)';
+      // We will move to name collection after user reply, so set step to 'name'
       session.step = 'name';
       break;
 
     case 'name': {
-      if (incomingMsg.toLowerCase() === 'skip') {
+      if (incomingMsg === 'skip') {
         session.step = 'done';
         reply = 'No problem! You can always restart by typing *restart*. 🌸';
       } else {
@@ -386,7 +421,7 @@ app.post('/whatsapp', async (req, res) => {
     }
 
     case 'email': {
-      if (incomingMsg.toLowerCase() === 'skip') {
+      if (incomingMsg === 'skip') {
         session.step = 'country';
         reply = 'What *country* are you based in? (e.g., India, USA) – this helps us find the right clinics.';
       } else {
@@ -402,27 +437,26 @@ app.post('/whatsapp', async (req, res) => {
     }
 
     case 'country': {
-      if (incomingMsg.toLowerCase() === 'skip') {
+      if (incomingMsg === 'skip') {
         session.step = 'consent';
-        reply = 'Finally, can we use your data to match you with clinics and send you information? Reply *yes* to consent, *no* to decline.';
+        reply = 'Finally, can we use your data to match you with clinics and send you information?';
+        sendWithButtons(res, reply, [{title:'Yes'}, {title:'No'}]);
+        return;
       } else {
         session.data.leadCountry = incomingMsg;
         session.step = 'consent';
-        reply = 'Can we use your data to *match you with clinics and send information*? (Reply *yes* or *no*)';
+        reply = 'Can we use your data to *match you with clinics and send information*?';
+        sendWithButtons(res, reply, [{title:'Yes'}, {title:'No'}]);
+        return;
       }
       break;
     }
 
     case 'consent': {
-      let ans = incomingMsg.toLowerCase();
+      let ans = incomingMsg === '1' ? 'yes' : (incomingMsg === '2' ? 'no' : incomingMsg);
       if (ans === 'yes') {
         session.data.consentGiven = true;
-
-        // Calculate scores for storage
-        const basicScore = calculateBasicScore(session.data);
-        const enhancedScore = (session.data.includeLab && (session.data.amhValue || session.data.fsh || session.data.afc))
-                              ? calculateEnhancedScore(session.data) : null;
-
+        // Save to Supabase
         await saveLeadToSupabase({
           source: 'whatsapp',
           age: session.data.age,
@@ -442,15 +476,14 @@ app.post('/whatsapp', async (req, res) => {
           lab_amh_unit: session.data.amhUnit || null,
           lab_fsh: session.data.fsh || null,
           lab_afc: session.data.afc || null,
-          basic_score: basicScore,
-          enhanced_score: enhancedScore,
+          basic_score: session.data.basic_score,
+          enhanced_score: session.data.enhanced_score || null,
           name: session.data.leadName || null,
           email: session.data.leadEmail || null,
-          phone: null, // WhatsApp number is not stored separately (you can add if needed)
+          phone: null,
           country: session.data.leadCountry || null,
           consent_marketing: true,
         });
-
         reply = '✅ We have received your details. A fertility advisor may reach out with options. Thank you!';
       } else {
         reply = 'Understood. Your data will not be used for marketing. Thank you for using the tool.';
@@ -463,22 +496,29 @@ app.post('/whatsapp', async (req, res) => {
       reply = 'You can type *restart* to start over.';
   }
 
-  sessions.set(from, session);
+  // Fallback: send plain text if not already sent by quick-reply handler
   twiml.message(reply);
   res.writeHead(200, { 'Content-Type': 'text/xml' });
   res.end(twiml.toString());
 });
 
-// ============================
-// WEB WIDGET API ENDPOINT
-// ============================
+function showScore(data) {
+  let score;
+  if (data.includeLab && (data.amhValue || data.fsh || data.afc)) {
+    score = calculateEnhancedScore(data);
+  } else {
+    score = calculateBasicScore(data);
+  }
+  const interp = getInterpretation(score);
+  return `📊 *Your Fertility Score: ${score}/100* – *${interp.band} Potential*\n\n${interp.text}\n\n⚠️ This is not a diagnosis.`;
+}
+
+// ---------- Web widget API (unchanged) ----------
 app.post('/api/leads', async (req, res) => {
   const data = req.body;
-
   if (!data.email || !data.name) {
     return res.status(400).json({ error: 'Name and email are required.' });
   }
-
   const success = await saveLeadToSupabase({
     source: 'web_widget',
     age: data.age,
@@ -504,10 +544,9 @@ app.post('/api/leads', async (req, res) => {
     email: data.email,
     phone: data.phone || null,
     country: data.country,
-    consent_marketing: true, // user already clicked consent
+    consent_marketing: true,
     consent_research: false
   });
-
   if (success) {
     return res.status(201).json({ success: true });
   } else {
@@ -515,15 +554,7 @@ app.post('/api/leads', async (req, res) => {
   }
 });
 
-// Health check
-app.get('/', (req, res) => {
-  res.send('Fertility Bot API is running.');
-});
+app.get('/', (req, res) => res.send('Fertility Bot API is running.'));
 
-// ============================
-// START SERVER
-// ============================
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
