@@ -593,46 +593,77 @@ app.post('/whatsapp', async (req, res) => {
     }
 
     case 'consultConsent': {
-      if (isYes(incomingMsg)) {
-        // Update lead or insert new if no report
-        const name = session.data.consultName || session.data.reportName || session.data.userName;
-        const email = session.data.consultEmail || session.data.reportEmail;
-        if (session.data.reportId) {
-          await updateLead(session.data.reportId, {
-            consent_marketing: true,
-            name: name,
-            email: email,
-          });
-        } else {
-          // No report, create new lead
-          const reportId = crypto.randomUUID().slice(0, 8);
-          const riskCategory = determineRiskCategory({...});
-          await saveLead({
-            report_id: reportId,
-            source: 'whatsapp',
-            age: session.data.age, height: session.data.height, weight: session.data.weight,
-            bmi: session.data.bmi, prevBirth: session.data.prevBirth, cycleReg: session.data.cycleReg,
-            pcos: session.data.pcos, endo: session.data.endo, thyroid: session.data.thyroid,
-            diabetes: session.data.diabetes, smoking: session.data.smoking, alcohol: session.data.alcohol,
-            tryDuration: session.data.tryDuration, stiHistory: session.data.stiHistory,
-            pelvicSurgery: session.data.pelvicSurgery, familyEarlyMenopause: session.data.familyEarlyMenopause,
-            recreationalDrugs: session.data.recreationalDrugs, caffeine: session.data.caffeine,
-            cancerTreatment: session.data.cancerTreatment,
-            lab_amh: session.data.amhValue || null, lab_amh_unit: session.data.amhUnit || null,
-            lab_fsh: session.data.fsh || null, lab_afc: session.data.afc || null,
-            risk_category: riskCategory,
-            name: name, email: email, consent_marketing: true,
-          });
-          session.data.reportId = reportId;
-        }
-        reply = '✅ A fertility advisor will contact you soon. Thank you!';
-      } else {
-        reply = 'Understood. Your data will not be shared.';
-      }
-      session.step = 'done';
-      break;
+  if (isYes(incomingMsg)) {
+    const name = session.data.consultName || session.data.reportName || session.data.userName;
+    const email = session.data.consultEmail || session.data.reportEmail;
+    if (session.data.reportId) {
+      await updateLead(session.data.reportId, {
+        consent_marketing: true,
+        name: name,
+        email: email,
+      });
+    } else {
+      // No report, create new lead
+      const reportId = crypto.randomUUID().slice(0, 8);
+      const riskCategory = determineRiskCategory({
+        age: session.data.age,
+        bmi: session.data.bmi,
+        prevBirth: session.data.prevBirth,
+        cycleReg: session.data.cycleReg,
+        pcos: session.data.pcos,
+        endo: session.data.endo,
+        thyroid: session.data.thyroid,
+        diabetes: session.data.diabetes,
+        smoking: session.data.smoking,
+        alcohol: session.data.alcohol,
+        tryDuration: session.data.tryDuration,
+        stiHistory: session.data.stiHistory,
+        pelvicSurgery: session.data.pelvicSurgery,
+        familyEarlyMenopause: session.data.familyEarlyMenopause,
+        recreationalDrugs: session.data.recreationalDrugs,
+        caffeine: session.data.caffeine,
+        cancerTreatment: session.data.cancerTreatment
+      });
+      await saveLead({
+        report_id: reportId,
+        source: 'whatsapp',
+        age: session.data.age,
+        height: session.data.height,
+        weight: session.data.weight,
+        bmi: session.data.bmi,
+        prevBirth: session.data.prevBirth,
+        cycleReg: session.data.cycleReg,
+        pcos: session.data.pcos,
+        endo: session.data.endo,
+        thyroid: session.data.thyroid,
+        diabetes: session.data.diabetes,
+        smoking: session.data.smoking,
+        alcohol: session.data.alcohol,
+        tryDuration: session.data.tryDuration,
+        stiHistory: session.data.stiHistory,
+        pelvicSurgery: session.data.pelvicSurgery,
+        familyEarlyMenopause: session.data.familyEarlyMenopause,
+        recreationalDrugs: session.data.recreationalDrugs,
+        caffeine: session.data.caffeine,
+        cancerTreatment: session.data.cancerTreatment,
+        lab_amh: session.data.amhValue || null,
+        lab_amh_unit: session.data.amhUnit || null,
+        lab_fsh: session.data.fsh || null,
+        lab_afc: session.data.afc || null,
+        risk_category: riskCategory,
+        name: name,
+        email: email,
+        consent_marketing: true,
+      });
+      session.data.reportId = reportId;
     }
-
+    reply = '✅ A fertility advisor will contact you soon. Thank you!';
+  } else {
+    reply = 'Understood. Your data will not be shared.';
+  }
+  session.step = 'done';
+  break;
+}
     case 'done':
       reply = 'You can type *restart* to start over.';
       break;
